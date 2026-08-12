@@ -1,0 +1,9 @@
+# Core analysis runs on the standard library alone.
+# Windows has no system tz database, so zoneinfo needs this for correct
+# local-hour math (the 8am-9pm calling window depends on it).
+tzdata>=2024.1
+
+# --- enrichment stage (not yet wired) ---
+# twilio>=9.0.0        # line type + carrier lookup: is this DID VoIP or a real line
+# requests>=2.31.0     # FCC Robocall Mitigation DB, CourtListener, state registries
+# pdfplumber>=0.11.0   # AT&T PDF statement parsing

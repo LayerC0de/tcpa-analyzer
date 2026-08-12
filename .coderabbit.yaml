@@ -1,0 +1,56 @@
+# CodeRabbit configuration -- https://docs.coderabbit.ai
+# Free for public repositories.
+language: en-US
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_instructions:
+    - path: "src/tcpa/**/*.py"
+      instructions: |
+        This code produces evidence people take to regulators and courts.
+        Prioritize, in order:
+        1. CORRECTNESS OF ATTRIBUTION. Flag anything that could assert a carrier
+           or entity placed a call. NANPA data identifies a number-block holder,
+           never the caller or subscriber.
+        2. SOURCE MIXING. Carrier records use rounded billed minutes and omit
+           unanswered calls. Any duration-sensitive analysis must exclude rows
+           where duration_estimated = 1. Rollups must exclude dup_of_device = 1.
+        3. NORMALIZATION. Every phone number must pass through phone.normalize()
+           exactly once. Comparing raw strings silently double-counts the same
+           line written in different formats.
+        4. EVIDENCE CONFLATION. Complaints about neighbouring numbers in a block
+           are circumstantial; complaints naming the exact number are direct.
+           The exact_match flag must never be dropped or ignored.
+
+    - path: "src/tcpa/report/**/*.py"
+      instructions: |
+        Output here goes to regulators, attorneys, and strangers.
+        - Flag anything that states a legal conclusion. This tool organizes
+          information; it does not assess whether a claim exists.
+        - Flag any code path that could SUBMIT a complaint automatically. Filing
+          must always be a deliberate human act.
+        - In fingerprint.py, flag ANY field that could identify the recipient:
+          their phone number, name, location, or exact timestamps. Fingerprints
+          are designed to be shared publicly and must contain only the caller's
+          infrastructure.
+
+    - path: "docs/**/*.md"
+      instructions: |
+        Flag claims that overstate certainty, and any statement that reads as
+        legal advice rather than a description of what the software does.
+
+    - path: "src/tcpa/ingest/**/*.py"
+      instructions: |
+        Parsers handle other people's personal records. Flag anything that logs
+        record contents, writes outside data/, or transmits data off-machine.
+
+chat:
+  auto_reply: true

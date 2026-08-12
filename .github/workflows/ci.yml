@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is included deliberately: zoneinfo has no system timezone
+        # database there, and a missing tzdata silently corrupts the
+        # 8am-9pm calling-window analysis rather than raising.
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -r requirements.txt
+      - name: Import check
+        run: |
+          python -c "import sys; sys.path.insert(0,'src'); import tcpa, tcpa.db, tcpa.phone, tcpa.analyze.campaign, tcpa.analyze.targets, tcpa.analyze.texts, tcpa.ingest.android, tcpa.ingest.att, tcpa.enrich.nanpa, tcpa.enrich.fcc, tcpa.report.ftc, tcpa.report.packet, tcpa.report.fingerprint, tcpa.report.contribute; print('imports ok')"
+      - name: CLI help
+        run: python cli.py --help
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  privacy-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Corpus contributions are machine-validated against an allowlist.
+      # Reviewers cannot reliably eyeball whether a JSON blob leaks personal
+      # data, so anything unanticipated fails the build instead.
+      - name: Validate corpus contributions
+        run: python scripts/validate_contribution.py
+
+      # Real call records must never be committed, by anyone, ever.
+      - name: Refuse committed call records
+        run: |
+          set -e
+          if git ls-files | grep -Ei '\.(xlsx|xls|db|sqlite3?)$'; then
+            echo "::error::Spreadsheet or database files are committed. These may contain real call records."
+            exit 1
+          fi
+          if git ls-files | grep -E '^data/'; then
+            echo "::error::Files committed under data/. That directory is gitignored for a reason."
+            exit 1
+          fi
+          echo "no record files committed"
