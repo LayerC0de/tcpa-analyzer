@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 
+from ..db import KNOWN_CONTACT_SQL
+
 # A local business holding consecutive DIDs looks identical to a dialer on the
 # block signal alone. Blocks whose numbers hold long conversations are almost
 # certainly legitimate, so they are excluded before clustering.
@@ -38,7 +40,9 @@ def fingerprint_cluster(con, max_answer_s: int = 60, same_day_hours: float = 24.
     # on a zero-duration call paired with a sub-60-second one; carrier records
     # bill in rounded minutes and omit unanswered calls entirely, so including
     # them would both blur the durations and hide half the signature.
-    rows = con.execute("""
+    # Known contacts are excluded with the same rule rebuild_numbers() uses, so
+    # every member has a rollup row (campaign_numbers references numbers).
+    rows = con.execute(f"""
         SELECT number, local_date, duration_s, ts_utc, geo
         FROM calls
         WHERE number IS NOT NULL
@@ -46,6 +50,7 @@ def fingerprint_cluster(con, max_answer_s: int = 60, same_day_hours: float = 24.
           AND (contact_name IS NULL OR contact_name = '')
           AND duration_estimated = 0
           AND dup_of_device = 0
+          AND number NOT IN ({KNOWN_CONTACT_SQL})
         ORDER BY number, ts_utc
     """).fetchall()
 
@@ -182,9 +187,8 @@ def build(con, label: str = "Rotating-DID campaign"):
     # Auto-detected campaigns are derived data -- recomputed from scratch each
     # run. Drop prior automatic results so repeated analysis doesn't accumulate
     # duplicates, but never touch manually curated ones.
-    con.execute("DELETE FROM campaign_numbers WHERE campaign_id IN "
-                "(SELECT id FROM campaigns WHERE detection_method != 'manual')")
-    con.execute("DELETE FROM campaigns WHERE detection_method != 'manual'")
+    old_ids = [r["id"] for r in con.execute(
+        "SELECT id FROM campaigns WHERE detection_method != 'manual'")]
 
     cur = con.execute(
         "INSERT INTO campaigns (label, detection_method, confidence, notes) VALUES (?,?,?,?)",
@@ -193,6 +197,18 @@ def build(con, label: str = "Rotating-DID campaign"):
          f"{len(corroborated)} corroborated by both signals"),
     )
     cid = cur.lastrowid
+
+    # Entities and revocations are curated by hand but hang off a campaign id.
+    # The rebuilt campaign replaces the old one, so carry those links forward
+    # rather than deleting them (or failing on the foreign key).
+    if old_ids:
+        marks = ",".join("?" * len(old_ids))
+        for table in ("entities", "revocations"):
+            con.execute(f"UPDATE {table} SET campaign_id = ? "
+                        f"WHERE campaign_id IN ({marks})", (cid, *old_ids))
+        con.execute(f"DELETE FROM campaign_numbers WHERE campaign_id IN ({marks})",
+                    old_ids)
+        con.execute(f"DELETE FROM campaigns WHERE id IN ({marks})", old_ids)
     for n in sorted(members):
         ev = "fingerprint+block" if n in corroborated else (
             "fingerprint" if n in fp_numbers else "block")
