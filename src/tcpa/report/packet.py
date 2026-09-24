@@ -62,6 +62,9 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
 
     ents = con.execute(
         "SELECT * FROM entities WHERE campaign_id = ?", (campaign_id or -1,)).fetchall()
+    # Only a caller or seller is a defendant. A carrier entity is the
+    # subpoena path; counting it here would hide the most important gap.
+    defendants = [e for e in ents if e["role"] in ("caller", "seller")]
 
     comp = con.execute(f"""
         SELECT COUNT(*) n,
@@ -113,17 +116,18 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
     else:
         out.append("    Carrier data not resolved. Run `enrich` before filing.")
 
-    if ents:
+    for e in ents:
         out.append("")
-        for e in ents:
-            out.append(f"  Entity: {e['legal_name']}  [{e['role']}]")
-            out.append(f"    Registration: {e['state_of_reg']}")
-            out.append(f"    Registered agent: {e['registered_agent']}")
-            out.append(f"    Agent address: {e['agent_address']}")
-            out.append(f"    Source: {e['source_url']}")
-    else:
-        out += ["", "  NO LEGAL ENTITY IDENTIFIED. This is the blocking issue:",
-                "  a campaign without a named, servable defendant cannot be filed."]
+        out.append(f"  Entity: {e['legal_name']}  [{e['role']}]")
+        if e["role"] == "carrier":
+            out.append("    Carrier of record -- a subpoena target, NOT a defendant.")
+        out.append(f"    Registration: {e['state_of_reg']}")
+        out.append(f"    Registered agent: {e['registered_agent']}")
+        out.append(f"    Agent address: {e['agent_address']}")
+        out.append(f"    Source: {e['source_url']}")
+    if not defendants:
+        out += ["", "  NO DEFENDANT IDENTIFIED. This is the blocking issue:",
+                "  a campaign without a named, servable caller or seller cannot be filed."]
 
     out += ["",
             "3. COUNTABLE VIOLATIONS",
@@ -158,8 +162,8 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
 
     out += ["", "5. WHAT IS NOT ESTABLISHED", "-" * 78]
     gaps = []
-    if not ents:
-        gaps.append("No legal entity identified -- no one to serve.")
+    if not defendants:
+        gaps.append("No defendant (caller or seller) identified -- no one to serve.")
     if not revs:
         gaps.append("No documented revocation -- no willfulness multiplier.")
     if not dnc_since:
