@@ -122,7 +122,8 @@ def cmd_analyze(args):
 
 
 def cmd_enrich(args):
-    from tcpa.enrich import nanpa
+    from tcpa.enrich import nanpa, resporg
+    from tcpa.phone import is_toll_free
 
     con = db.connect()
     if args.all:
@@ -140,16 +141,112 @@ def cmd_enrich(args):
             "SELECT enriched_at FROM numbers WHERE number=?", (r["number"],)
         ).fetchone()["enriched_at"] is None]
 
-    numbers = [r["number"] for r in rows]
-    if not numbers:
+    # Toll-free numbers have no NANPA block; they resolve through the RespOrg
+    # registry instead. With --all that includes FCC callback numbers, which
+    # never appear in `numbers` but often lead to the seller.
+    candidates = [r["number"] for r in rows]
+    numbers = [n for n in candidates if not is_toll_free(n)]
+    toll_free = [n for n in candidates if is_toll_free(n)]
+    if args.all:
+        toll_free = sorted(set(toll_free) | set(resporg.toll_free_numbers(con)))
+    if not args.refresh:
+        toll_free = resporg.due(con, toll_free)
+
+    if not numbers and not toll_free:
         print("nothing to enrich (use --refresh to re-fetch, --all to widen scope)")
+        con.close()
         return
-    print(f"enriching {len(numbers)} numbers ({scope}) via public NANPA block data")
-    stats = nanpa.enrich(con, numbers)
-    print(f"\nresolved {stats['resolved']}, failed {stats['failed']}, "
-          f"{stats['exchanges_fetched']} exchanges fetched")
+    if numbers:
+        print(f"enriching {len(numbers)} numbers ({scope}) via public NANPA block data")
+        stats = nanpa.enrich(con, numbers)
+        print(f"\nresolved {stats['resolved']}, failed {stats['failed']}, "
+              f"{stats['exchanges_fetched']} exchanges fetched")
+    if toll_free:
+        print(f"\nlooking up RespOrg for {len(toll_free)} toll-free numbers "
+              f"via {resporg.AUTO_SOURCE}")
+        stats = resporg.lookup(con, toll_free)
+        print(f"\nresolved {stats['resolved']}, no registry record "
+              f"{stats['not_found']}, failed {stats['failed']}  "
+              f"-- see `resporg` for the list")
     con.close()
-    cmd_carriers(args)
+    if numbers:
+        cmd_carriers(args)
+
+
+def _print_resporg_history(con, number):
+    from tcpa.enrich import resporg
+
+    rows = resporg.history(con, number)
+    print(f"\n{display(number)}")
+    if not rows:
+        print("  no RespOrg lookups yet -- run `resporg <number> --lookup`")
+        return
+    for r in rows:
+        who = (f"{r['resporg_id']}  {r['resporg_name'] or ''}"
+               + (f" ({r['resporg_group']})" if r["resporg_group"] else "")
+               if r["resporg_id"] else "no registry record")
+        since = f" since {r['status_since']}" if r["status_since"] else ""
+        print(f"  {r['checked_on']}  {r['method']:<7} {who}  "
+              f"[{r['status'] or '?'}{since}]")
+        print(f"  {'':<10}  source: {r['source']}"
+              + (f"  -- {r['note']}" if r["note"] else ""))
+    print("\n  NOTE: a RespOrg manages the number's routing record. It is NOT the")
+    print("  caller. 'auto' results are third-party leads -- confirm on somos.com")
+    print("  and record it with --id/--source before citing it anywhere.")
+
+
+def cmd_resporg(args):
+    from tcpa.enrich import resporg
+
+    con = db.connect()
+    try:
+        number = resporg.parse_number(args.number) if args.number else None
+        if number and args.id:
+            resporg.record_manual(con, number, args.id, args.source, name=args.name,
+                                  status=args.status, checked_on=args.date,
+                                  note=args.note)
+            print(f"recorded manual lookup for {display(number)}")
+        elif args.id:
+            raise ValueError("--id needs a number")
+    except ValueError as exc:
+        con.close()
+        sys.exit(str(exc))
+
+    if number:
+        if args.lookup:
+            resporg.lookup(con, [number])
+        _print_resporg_history(con, number)
+        con.close()
+        return
+
+    if args.lookup:
+        todo = resporg.due(con, list(resporg.toll_free_numbers(con)))
+        if todo:
+            print(f"looking up {len(todo)} toll-free numbers via {resporg.AUTO_SOURCE}")
+            resporg.lookup(con, todo)
+            print()
+
+    rows = resporg.worklist(con)
+    if not rows:
+        print("no toll-free numbers in the data")
+        con.close()
+        return
+    print(f"=== TOLL-FREE NUMBERS ({len(rows)}) -- RespOrg is the subpoena path ===")
+    print(f"  {'number':<16}{'calls':>6}  {'last call':<11}{'fcc cb':>7}  "
+          f"{'resporg':<7} {'status':<10}{'method':<8}holder")
+    for r in rows:
+        if r["checked_on"]:
+            rid = r["resporg_id"] or "-"
+            status = r["status"] or "?"
+            holder = r["resporg_name"] or ("no registry record" if not r["resporg_id"] else "")
+        else:
+            rid, status, holder = "", "", "not looked up"
+        print(f"  {display(r['number']):<16}{r['calls']:>6}  {r['last_call'] or '-':<11}"
+              f"{r['fcc_callbacks']:>7}  {rid:<7} {status:<10}{r['method'] or '':<8}"
+              f"{holder}")
+    print("\n  fcc cb = times this number was named as the callback number in stored")
+    print("  FCC complaints. 'auto' = third-party lead; 'manual' = you confirmed it.")
+    con.close()
 
 
 def cmd_carriers(args):
@@ -519,6 +616,19 @@ def main():
     sp.add_argument("--refresh", action="store_true",
                     help="re-fetch numbers that are already enriched")
     sp.set_defaults(func=cmd_enrich)
+
+    sp = sub.add_parser("resporg",
+                        help="toll-free RespOrg lookups (the toll-free subpoena path)")
+    sp.add_argument("number", nargs="?", help="one toll-free number (else: list all)")
+    sp.add_argument("--lookup", action="store_true",
+                    help="query resporgs.com now (all due numbers if no number given)")
+    sp.add_argument("--id", help="record a manual somos.com result: the RespOrg ID")
+    sp.add_argument("--source", help="where the manual result came from (required with --id)")
+    sp.add_argument("--name", help="company name for the RespOrg ID")
+    sp.add_argument("--status", help="status shown by Somos, e.g. WORKING")
+    sp.add_argument("--date", help="date of the manual lookup, YYYY-MM-DD (default today)")
+    sp.add_argument("--note")
+    sp.set_defaults(func=cmd_resporg)
 
     sp = sub.add_parser("carriers", help="carrier concentration for campaign numbers")
     sp.set_defaults(func=cmd_carriers)

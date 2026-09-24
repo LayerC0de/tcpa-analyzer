@@ -55,6 +55,7 @@ inbound events.
 python cli.py analyze     # cluster rotating-number campaigns
 python cli.py enrich      # carrier + OCN per number (public NANPA data, free)
 python cli.py complaints  # cross-reference the FCC complaint dataset
+python cli.py resporg     # toll-free numbers and who manages them (RespOrg)
 python cli.py targets     # rank callers by suability
 python cli.py texts       # incoming text analysis (carrier sources only)
 ```
@@ -62,6 +63,22 @@ python cli.py texts       # incoming text analysis (carrier sources only)
 `enrich` is rate-limited to be polite to a free community service — budget about
 a second per exchange. Results are cached, and re-running `ingest` will not wipe
 them.
+
+Toll-free numbers have no carrier block, so `enrich` looks up their **RespOrg**
+instead: the company managing the number in the Somos registry, and the
+subpoena path for a toll-free caller. `enrich --all` also covers toll-free
+callback numbers from stored FCC complaints, so run it again after
+`complaints`. These automated results come from a third-party directory and are
+marked `auto`. Before citing one, confirm it with the free lookup on somos.com
+and record it:
+
+```bash
+python cli.py resporg 866-555-0123 --id ABC01 --name "Example Telecom" --source "somos.com lookup"
+```
+
+Legitimate callers that never appear as a contact (your bank, a pharmacy) can be
+listed in `data/known_numbers.txt`, one number per line with a `#` note. They
+are then excluded everywhere, like address-book contacts.
 
 ## Step 3 — produce output
 

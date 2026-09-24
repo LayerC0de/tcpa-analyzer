@@ -23,11 +23,11 @@ class TestParse(unittest.TestCase):
         known, invalid = db.parse_known_numbers(
             "# header comment\n"
             "\n"
-            "800-555-0100   # Example Bank -- auto loan\n"
+            "202-555-0100   # Example Bank -- auto loan\n"
             "+1 (716) 555-1234\n"
             "12345  # short code, not NANP\n"
         )
-        self.assertEqual(known, {"8005550100": "Example Bank -- auto loan",
+        self.assertEqual(known, {"2025550100": "Example Bank -- auto loan",
                                  "7165551234": ""})
         self.assertEqual(invalid, ["12345  # short code, not NANP"])
 
@@ -49,28 +49,28 @@ class TestExclusion(unittest.TestCase):
 
     def test_listed_number_leaves_rollup(self):
         con = db.connect(self.path)
-        _call(con, 1, "8005550100")
-        _call(con, 2, "8005550100", "MISSED", 0)
+        _call(con, 1, "2025550100")
+        _call(con, 2, "2025550100", "MISSED", 0)
         _call(con, 3, "7165550000")
         con.commit()
         con.close()
-        self.assertEqual(self._rollup(), {"8005550100", "7165550000"})
+        self.assertEqual(self._rollup(), {"2025550100", "7165550000"})
 
         (Path(self.dir.name) / db.KNOWN_NUMBERS_FILE).write_text(
-            "(800) 555-0100  # bank\n", encoding="utf-8")
+            "(202) 555-0100  # bank\n", encoding="utf-8")
         self.assertEqual(self._rollup(), {"7165550000"})
 
     def test_removing_entry_restores_number(self):
         known = Path(self.dir.name) / db.KNOWN_NUMBERS_FILE
-        known.write_text("8005550100\n", encoding="utf-8")
+        known.write_text("2025550100\n", encoding="utf-8")
         con = db.connect(self.path)
-        _call(con, 1, "8005550100")
+        _call(con, 1, "2025550100")
         con.commit()
         con.close()
         self.assertEqual(self._rollup(), set())
 
         known.write_text("", encoding="utf-8")
-        self.assertEqual(self._rollup(), {"8005550100"})
+        self.assertEqual(self._rollup(), {"2025550100"})
 
 
 if __name__ == "__main__":

@@ -10,11 +10,19 @@ has no server.
 
 ## What leaves your machine
 
-Only two things, both optional, and neither sends your phone number.
+Only three things, all optional, and none sends your phone number.
 
 **Carrier lookups** (`enrich`) request a **six-digit prefix** of a calling
 number — the NPA-NXX of the number that called *you* — from a public
 number-administration service. Your own number is never transmitted.
+
+**Toll-free RespOrg lookups** (`enrich`, `resporg --lookup`) send the **full
+toll-free number** — one that called you, or a callback number named in an FCC
+complaint — to resporgs.com, a public directory built from the Somos registry.
+Nothing else from the call record goes with it, but it is the complete caller
+number rather than a prefix. To avoid this, skip `resporg --lookup`, run
+`enrich` without toll-free numbers in scope, and record results you look up
+yourself on somos.com with `resporg <number> --id ... --source ...`.
 
 **FCC complaint queries** (`complaints`, `callbacks`) query a public government
 dataset by calling-number prefix or by callback number. Again, these are the
@@ -22,7 +30,7 @@ spam operation's numbers, not yours.
 
 Nothing else makes network requests. You can run the entire ingest, campaign
 detection, targeting, packet, and fingerprint pipeline fully offline; only the
-two enrichment steps need a connection.
+enrichment steps need a connection.
 
 ## Fingerprints: the one thing designed to be shared
 

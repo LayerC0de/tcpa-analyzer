@@ -152,6 +152,33 @@ CREATE TABLE IF NOT EXISTS known_numbers (
     note              TEXT
 );
 
+-- RespOrg lookups for toll-free numbers. A toll-free number has no carrier
+-- block; the Responsible Organization on file in the Somos registry is the
+-- equivalent subpoena / traceback path. Like the block holder, it is NOT the
+-- caller. Kept as a dated log rather than columns on `numbers` because:
+--   - the rollup is rebuilt and prunes rows, which would lose manual entries,
+--   - FCC callback numbers never appear in `numbers` at all, and
+--   - numbers move between RespOrgs, so the date of each lookup matters.
+-- `method` separates a third-party automated result (a lead) from one the
+-- owner confirmed on somos.com (citable). Never present the first as the second.
+CREATE TABLE IF NOT EXISTS resporg_lookups (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    number            TEXT NOT NULL,        -- normalized 10-digit toll-free
+    resporg_id        TEXT,                 -- e.g. VZM01; NULL = no registry record
+    resporg_name      TEXT,                 -- company holding that RespOrg ID
+    resporg_group     TEXT,                 -- parent company, when known
+    status            TEXT,                 -- WORKING / SPARE / ... / NOT_FOUND
+    status_since      TEXT,                 -- date of the latest registry change
+    checked_on        TEXT NOT NULL,        -- date the lookup was made
+    method            TEXT NOT NULL,        -- 'auto' or 'manual'
+    source            TEXT NOT NULL,        -- where the answer came from
+    note              TEXT,
+    raw_json          TEXT,                 -- full response, for auto lookups
+    recorded_at       TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (number, method, checked_on)
+);
+CREATE INDEX IF NOT EXISTS idx_resporg_number ON resporg_lookups(number);
+
 -- Revocation events: the willfulness predicate. $500 -> $1500 per call after this.
 CREATE TABLE IF NOT EXISTS revocations (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -197,7 +224,7 @@ def parse_known_numbers(text: str) -> tuple[dict[str, str], list[str]]:
 
     One number per line, any common format, with an optional note after `#`:
 
-        800-555-0100   # Example Bank -- auto loan
+        202-555-0100   # Example Bank -- auto loan
 
     Lines that are blank or start with `#` are ignored. A line whose number
     does not normalize is returned as invalid rather than silently dropped,
