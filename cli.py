@@ -78,6 +78,7 @@ def cmd_ingest_att(args):
 
 def cmd_analyze(args):
     con = db.connect()
+    db.rebuild_numbers(con)  # pick up edits to known_numbers.txt
     result = campaign_mod.build(con)
     print(f"\n=== CAMPAIGN #{result['campaign_id']}  "
           f"confidence {result['confidence']:.2f} ===")
@@ -434,6 +435,29 @@ def cmd_entities(args):
     con.close()
 
 
+def cmd_known(args):
+    con = db.connect()
+    rows = con.execute("""
+        SELECT k.number, k.note, COUNT(c.id) calls, MAX(c.local_date) last
+        FROM known_numbers k
+        LEFT JOIN calls c ON c.number = k.number AND c.dup_of_device = 0
+             AND c.direction IN ('INCOMING','MISSED','REJECTED','BLOCKED')
+        GROUP BY k.number ORDER BY k.number
+    """).fetchall()
+    path = db.DEFAULT_DB.parent / db.KNOWN_NUMBERS_FILE
+    if not rows:
+        print(f"no known numbers -- add them to {path}")
+        con.close()
+        return
+    print(f"{len(rows)} known numbers from {path}")
+    print("excluded from targets, campaigns, and text analysis\n")
+    print(f"  {'number':<16}{'inbound':>8}  {'last call':<11} note")
+    for r in rows:
+        print(f"  {display(r['number']):<16}{r['calls']:>8}  {r['last'] or '-':<11} "
+              f"{r['note']}")
+    con.close()
+
+
 def cmd_report(args):
     con = db.connect()
     q = lambda s, *a: con.execute(s, a).fetchall()
@@ -547,6 +571,9 @@ def main():
 
     sp = sub.add_parser("entities", help="show resolved legal entities")
     sp.set_defaults(func=cmd_entities)
+
+    sp = sub.add_parser("known", help="list numbers in data/known_numbers.txt")
+    sp.set_defaults(func=cmd_known)
 
     sp = sub.add_parser("report", help="summarize the database")
     sp.set_defaults(func=cmd_report)

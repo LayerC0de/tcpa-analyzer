@@ -7,7 +7,10 @@ treats a number as evidence *of* a campaign rather than as a defendant.
 from __future__ import annotations
 
 import sqlite3
+import sys
 from pathlib import Path
+
+from .phone import normalize
 
 DEFAULT_DB = Path(__file__).resolve().parents[2] / "data" / "tcpa.db"
 
@@ -141,6 +144,14 @@ CREATE TABLE IF NOT EXISTS entities (
     confidence        REAL DEFAULT 0.0
 );
 
+-- Numbers the owner has identified as legitimate (their bank, a doctor's office)
+-- but that never show up as a contact in any source. Mirrored from
+-- known_numbers.txt on every connect; the file is the source of truth.
+CREATE TABLE IF NOT EXISTS known_numbers (
+    number            TEXT PRIMARY KEY,
+    note              TEXT
+);
+
 -- Revocation events: the willfulness predicate. $500 -> $1500 per call after this.
 CREATE TABLE IF NOT EXISTS revocations (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,6 +189,44 @@ def _migrate(con: sqlite3.Connection) -> None:
     con.commit()
 
 
+KNOWN_NUMBERS_FILE = "known_numbers.txt"
+
+
+def parse_known_numbers(text: str) -> tuple[dict[str, str], list[str]]:
+    """Parse the known-numbers file into ({number: note}, [invalid lines]).
+
+    One number per line, any common format, with an optional note after `#`:
+
+        800-555-0100   # Example Bank -- auto loan
+
+    Lines that are blank or start with `#` are ignored. A line whose number
+    does not normalize is returned as invalid rather than silently dropped,
+    since a typo here would quietly leave a legitimate caller in the targets.
+    """
+    known, invalid = {}, []
+    for line in text.splitlines():
+        raw, _, note = line.partition("#")
+        if not raw.strip():
+            continue
+        number = normalize(raw)
+        if number is None:
+            invalid.append(line.strip())
+        else:
+            known[number] = note.strip()
+    return known, invalid
+
+
+def sync_known_numbers(con: sqlite3.Connection, path: Path) -> list[str]:
+    """Mirror the known-numbers file into its table. Returns invalid lines."""
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    known, invalid = parse_known_numbers(text)
+    con.execute("DELETE FROM known_numbers")
+    con.executemany("INSERT INTO known_numbers (number, note) VALUES (?, ?)",
+                    known.items())
+    con.commit()
+    return invalid
+
+
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
     path = Path(path) if path else DEFAULT_DB
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -186,23 +235,30 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
     con.execute("PRAGMA foreign_keys = ON")
     con.executescript(SCHEMA)
     _migrate(con)
+    for line in sync_known_numbers(con, path.parent / KNOWN_NUMBERS_FILE):
+        print(f"warning: {KNOWN_NUMBERS_FILE}: not a NANP number, ignored: {line!r}",
+              file=sys.stderr)
     return con
 
 
-# A number is a KNOWN CONTACT if either is true:
-#   - any source ever attached an address-book name to it, or
-#   - the account holder placed an outgoing call to it.
+# A number is a KNOWN CONTACT if any of these is true:
+#   - any source ever attached an address-book name to it,
+#   - the account holder placed an outgoing call to it, or
+#   - the account holder listed it in known_numbers.txt.
 # The second test carries the weight for carrier data, which exports no contact
 # names at all. Without it every relative and doctor's office is scored as an
 # unsolicited caller -- and because they call often, they dominate the ranking.
 # Calling someone is affirmative evidence of a relationship, which is also the
-# opposite of the "no prior express consent" a TCPA claim requires.
+# opposite of the "no prior express consent" a TCPA claim requires. The third
+# covers businesses the owner has a relationship with but never calls or saves.
 KNOWN_CONTACT_SQL = """
     SELECT number FROM calls
     WHERE number IS NOT NULL AND contact_name IS NOT NULL AND contact_name != ''
     UNION
     SELECT number FROM calls
     WHERE number IS NOT NULL AND direction = 'OUTGOING'
+    UNION
+    SELECT number FROM known_numbers
 """
 
 

@@ -35,6 +35,8 @@ def _known(con) -> set[str]:
         UNION
         SELECT number FROM calls
         WHERE contact_name IS NOT NULL AND contact_name != '' AND number IS NOT NULL
+        UNION
+        SELECT number FROM known_numbers
     """).fetchall()
     return {r[0] for r in rows}
 
