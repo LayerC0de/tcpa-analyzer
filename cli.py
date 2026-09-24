@@ -182,9 +182,11 @@ def _print_resporg_history(con, number):
         print("  no RespOrg lookups yet -- run `resporg <number> --lookup`")
         return
     for r in rows:
-        who = (f"{r['resporg_id']}  {r['resporg_name'] or ''}"
-               + (f" ({r['resporg_group']})" if r["resporg_group"] else "")
-               if r["resporg_id"] else "no registry record")
+        if r["resporg_id"] or r["resporg_name"]:
+            who = (f"{r['resporg_id'] or '(no ID shown)'}  {r['resporg_name'] or ''}"
+                   + (f" ({r['resporg_group']})" if r["resporg_group"] else ""))
+        else:
+            who = "no registry record"
         since = f" since {r['status_since']}" if r["status_since"] else ""
         print(f"  {r['checked_on']}  {r['method']:<7} {who}  "
               f"[{r['status'] or '?'}{since}]")
@@ -192,7 +194,7 @@ def _print_resporg_history(con, number):
               + (f"  -- {r['note']}" if r["note"] else ""))
     print("\n  NOTE: a RespOrg manages the number's routing record. It is NOT the")
     print("  caller. 'auto' results are third-party leads -- confirm on somos.com")
-    print("  and record it with --id/--source before citing it anywhere.")
+    print("  and record it with --id or --name plus --source before citing it.")
 
 
 def cmd_resporg(args):
@@ -201,13 +203,13 @@ def cmd_resporg(args):
     con = db.connect()
     try:
         number = resporg.parse_number(args.number) if args.number else None
-        if number and args.id:
+        if number and (args.id or args.name):
             resporg.record_manual(con, number, args.id, args.source, name=args.name,
                                   status=args.status, checked_on=args.date,
                                   note=args.note)
             print(f"recorded manual lookup for {display(number)}")
-        elif args.id:
-            raise ValueError("--id needs a number")
+        elif args.id or args.name:
+            raise ValueError("--id/--name need a number")
     except ValueError as exc:
         con.close()
         sys.exit(str(exc))
@@ -624,7 +626,7 @@ def main():
                     help="query resporgs.com now (all due numbers if no number given)")
     sp.add_argument("--id", help="record a manual somos.com result: the RespOrg ID")
     sp.add_argument("--source", help="where the manual result came from (required with --id)")
-    sp.add_argument("--name", help="company name for the RespOrg ID")
+    sp.add_argument("--name", help="company name Somos shows (may be given without --id)")
     sp.add_argument("--status", help="status shown by Somos, e.g. WORKING")
     sp.add_argument("--date", help="date of the manual lookup, YYYY-MM-DD (default today)")
     sp.add_argument("--note")

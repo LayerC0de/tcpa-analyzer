@@ -164,17 +164,24 @@ def lookup(con, numbers: list[str], sleep: float = RATE_LIMIT_S,
 
 # --- manual entry ------------------------------------------------------------
 
-def record_manual(con, number: str, resporg_id: str, source: str,
+def record_manual(con, number: str, resporg_id: str | None, source: str,
                   name: str | None = None, status: str | None = None,
                   checked_on: str | None = None, note: str | None = None) -> None:
-    """Record a lookup the owner made on somos.com. `number` is normalized."""
+    """Record a lookup the owner made on somos.com. `number` is normalized.
+
+    The public somos.com form names the company but does not show the RespOrg
+    ID, so a name alone is accepted. Never fill in an ID from an automated
+    lookup here -- that would attribute a third-party answer to Somos.
+    """
     # Anything asserted in a filing needs a citation a judge can check.
     if not source or not source.strip():
         raise ValueError("a source is required (e.g. 'somos.com lookup')")
+    if not resporg_id and not (name or "").strip():
+        raise ValueError("record at least a RespOrg ID (--id) or company name (--name)")
     checked = date.fromisoformat(checked_on).isoformat() if checked_on \
         else date.today().isoformat()
-    parsed = {"resporg_id": parse_id(resporg_id),
-              "resporg_name": (name or "").strip() or None,
+    parsed = {"resporg_id": parse_id(resporg_id) if resporg_id else None,
+              "resporg_name": _clean(name),
               "resporg_group": None,
               "status": (status or "").strip().upper() or None,
               "status_since": None}
