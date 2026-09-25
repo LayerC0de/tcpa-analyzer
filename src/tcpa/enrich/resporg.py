@@ -85,27 +85,60 @@ def _clean(text: str | None) -> str | None:
     return " ".join((text or "").split()) or None
 
 
-def parse_history(data: dict) -> dict:
-    """Reduce a history response to the current holder and status.
+def _events(data: dict) -> list[dict]:
+    return sorted(data.get("events") or [], key=lambda e: e.get("ts") or "")
 
-    The current holder is the most recent registry event. A number with no
-    events has never had a registry record in the window the source covers,
-    which is itself worth knowing: a caller ID with no toll-free record behind
-    it was probably spoofed.
+
+def _code(event: dict) -> str | None:
+    # Spare-pool events carry no RespOrg; their holder "name" is a label such
+    # as "Returned to spare pool", which must never be read as a company.
+    holder = event.get("holder") or {}
+    return (holder.get("code") or event.get("org") or "").upper() or None
+
+
+def _holder(event: dict) -> dict:
+    holder = event.get("holder") or {}
+    return {"resporg_id": _code(event),
+            "resporg_name": _clean(holder.get("name")),
+            "resporg_group": _clean(holder.get("group"))}
+
+
+def parse_history(data: dict) -> dict:
+    """Reduce a history response to the last known holder and current status.
+
+    The holder is the most recent event that names a RespOrg, so a number since
+    returned to the spare pool still shows who last managed it; `status` (e.g.
+    SPARE) says it is no longer theirs. A number with no events at all has no
+    registry record in the window the source covers: a caller ID with nothing
+    behind it was probably spoofed.
     """
-    events = sorted(data.get("events") or [], key=lambda e: e.get("ts") or "")
+    events = _events(data)
     if not events:
         return {"resporg_id": None, "resporg_name": None, "resporg_group": None,
                 "status": "NOT_FOUND", "status_since": None}
+    held = [e for e in events if _code(e)]
     last = events[-1]
-    holder = last.get("holder") or {}
-    return {
-        "resporg_id": (holder.get("code") or last.get("org") or "").upper() or None,
-        "resporg_name": _clean(holder.get("name")),
-        "resporg_group": _clean(holder.get("group")),
-        "status": (last.get("status") or "").upper() or None,
-        "status_since": last.get("date"),
-    }
+    holder = _holder(held[-1]) if held else \
+        {"resporg_id": None, "resporg_name": None, "resporg_group": None}
+    return {**holder,
+            "status": (last.get("status") or "").upper() or None,
+            "status_since": last.get("date")}
+
+
+def holder_on(data: dict, day: str) -> dict | None:
+    """Who managed the number on `day` (YYYY-MM-DD), or None if nobody did.
+
+    For a number burned after use this is the question that matters: the
+    current holder may be the spare pool, or a different company entirely.
+    """
+    before = [e for e in _events(data) if (e.get("date") or "") <= day]
+    if not before:
+        return None
+    last = before[-1]
+    if not _code(last) or (last.get("status") or "").upper() == "SPARE":
+        return None
+    return {**_holder(last), "status": (last.get("status") or "").upper(),
+            "since": last.get("date")}
 
 
 def _store(con, number: str, parsed: dict, method: str, source: str,
@@ -228,16 +261,26 @@ def toll_free_numbers(con) -> dict[str, dict]:
 
 
 def worklist(con) -> list[dict]:
-    """toll_free_numbers() with the latest lookup attached, most active first."""
+    """toll_free_numbers() with the latest lookup attached, most active first.
+
+    `at_call` is the holder on the date of the most recent call, from the
+    stored registry history; None when no history or nobody held it then.
+    """
     out = []
     for number, it in toll_free_numbers(con).items():
         rows = history(con, number)
         latest = rows[0] if rows else None
+        raw = next((r["raw_json"] for r in rows if r["raw_json"]), None)
+        at_call = holder_on(json.loads(raw), it["last_call"]) \
+            if raw and it["last_call"] else None
         out.append({**it,
                     "resporg_id": latest["resporg_id"] if latest else None,
                     "resporg_name": latest["resporg_name"] if latest else None,
-                    "status": latest["status"] if latest else None,
+                    # A manual Somos entry names the holder but rarely a status;
+                    # fall back to the newest lookup that recorded one.
+                    "status": next((r["status"] for r in rows if r["status"]), None),
                     "method": latest["method"] if latest else None,
-                    "checked_on": latest["checked_on"] if latest else None})
+                    "checked_on": latest["checked_on"] if latest else None,
+                    "at_call": at_call})
     return sorted(out, key=lambda d: (d["last_call"] or "", d["fcc_callbacks"],
                                       d["calls"]), reverse=True)

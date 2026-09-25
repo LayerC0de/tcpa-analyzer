@@ -55,6 +55,28 @@ class TestParsing(unittest.TestCase):
         self.assertEqual(p["resporg_name"], "Independent Resporg")
         self.assertEqual(p["resporg_group"], "ATLC")
 
+    BURNED = {"events": [
+        {"date": "2025-12-15", "ts": "2025-12-15T10:00:00", "org": "EXA01",
+         "status": "Working", "holder": {"code": "EXA01", "name": "Example Labs"}},
+        {"date": "2026-07-14", "ts": "2026-07-14T10:00:00", "org": "EXA01",
+         "status": "Disconnect", "holder": {"code": "EXA01", "name": "Example Labs"}},
+        {"date": "2026-08-31", "ts": "2026-08-31T10:00:00", "org": None,
+         "status": "Spare", "holder": {"code": "", "name": "Returned to spare pool"}},
+    ]}
+
+    def test_spare_pool_label_is_never_a_company(self):
+        p = resporg.parse_history(self.BURNED)
+        self.assertEqual(p["resporg_id"], "EXA01")          # last real holder
+        self.assertEqual(p["resporg_name"], "Example Labs")
+        self.assertEqual(p["status"], "SPARE")
+        self.assertEqual(p["status_since"], "2026-08-31")
+
+    def test_holder_on_call_date(self):
+        self.assertEqual(resporg.holder_on(self.BURNED, "2025-12-18")["resporg_id"],
+                         "EXA01")
+        self.assertIsNone(resporg.holder_on(self.BURNED, "2025-12-01"))  # not yet
+        self.assertIsNone(resporg.holder_on(self.BURNED, "2026-09-10"))  # spare
+
     def test_no_events_is_not_found(self):
         p = resporg.parse_history(EMPTY)
         self.assertIsNone(p["resporg_id"])

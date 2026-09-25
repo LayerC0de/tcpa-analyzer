@@ -11,6 +11,18 @@ import re
 
 TOLL_FREE_NPA = frozenset({"800", "833", "844", "855", "866", "877", "888"})
 
+# Canadian geographic area codes (NANP members outside the US). New overlays
+# open every few years; a missing code only undercounts, it never misfiles a
+# US number as Canadian.
+CANADIAN_NPA = frozenset({
+    "204", "226", "236", "249", "250", "263", "289", "306", "343", "354",
+    "365", "367", "368", "382", "403", "416", "418", "428", "431", "437",
+    "438", "450", "468", "474", "506", "514", "519", "548", "579", "581",
+    "584", "587", "604", "613", "639", "647", "672", "683", "705", "709",
+    "742", "753", "778", "780", "782", "807", "819", "825", "867", "873",
+    "879", "902", "905",
+})
+
 _DIGITS = re.compile(r"\D")
 
 
@@ -55,6 +67,10 @@ def npa_nxx(number: str) -> str:
 
 def is_toll_free(number: str) -> bool:
     return npa(number) in TOLL_FREE_NPA
+
+
+def is_canadian(number: str) -> bool:
+    return npa(number) in CANADIAN_NPA
 
 
 def display(number: str | None) -> str:

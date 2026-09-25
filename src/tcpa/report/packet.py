@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from ..phone import display
+from . import leads
 
 PER_CALL = 500
 PER_CALL_WILLFUL = 1500
@@ -172,6 +173,9 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
         gaps.append("No device-log records -- unanswered calls likely missing.")
     gaps.append("No call recordings referenced -- ATDS/prerecorded voice unproven.")
     out += [f"  - {g}" for g in gaps]
+
+    if campaign_id:
+        out += [""] + leads.section(con)
 
     out += ["", "FULL CALL LOG", "-" * 78]
     for c in calls:

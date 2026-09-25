@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from tcpa import db  # noqa: E402
-from tcpa.report import packet  # noqa: E402
+from tcpa.report import leads, packet  # noqa: E402
 
 GAP = "No defendant (caller or seller) identified"
 
@@ -47,6 +47,47 @@ class TestDefendantGap(unittest.TestCase):
     def test_seller_entity_closes_the_gap(self):
         self._entity("seller")
         self.assertNotIn(GAP, packet.build(self.con, campaign_id=self.cid))
+
+
+class TestLeads(unittest.TestCase):
+    """Leads are reported beside the campaign, never folded into it."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.con = db.connect(Path(self.dir.name) / "tcpa.db")
+        for i, (num, dur) in enumerate([("4165550101", 8), ("6045550102", 0),
+                                        ("8005550199", 5), ("8005550199", 0)]):
+            self.con.execute("""INSERT INTO calls (source, source_row_id, number, ts_utc,
+                     local_iso, local_date, local_hour, duration_s, direction)
+                     VALUES ('test',?,?,?,'2026-09-01 12:00:00','2026-09-01',12,?,?)""",
+                             (str(i), num, i, dur, "INCOMING" if dur else "MISSED"))
+        db.rebuild_numbers(self.con)
+        self.con.commit()
+
+    def tearDown(self):
+        self.con.close()
+        self.dir.cleanup()
+
+    def _campaign(self, *numbers):
+        cid = self.con.execute("INSERT INTO campaigns (label, detection_method) "
+                               "VALUES ('t','fingerprint')").lastrowid
+        for n in numbers:
+            self.con.execute("INSERT INTO campaign_numbers VALUES (?,?,NULL)", (cid, n))
+        self.con.commit()
+        return "\n".join(leads.section(self.con))
+
+    def test_canadian_and_toll_free_reported(self):
+        from tcpa.enrich import resporg
+        resporg.record_manual(self.con, "8005550199", None, "somos.com",
+                              name="Example Telecom")
+        text = self._campaign()
+        self.assertIn("2 calls from 2 numbers across 2 Canadian area codes", text)
+        self.assertIn("Example Telecom", text)
+        self.assertIn("name confirmed on somos.com", text)
+
+    def test_campaign_members_are_not_double_counted(self):
+        text = self._campaign("4165550101")
+        self.assertIn("1 calls from 1 numbers across 1 Canadian area codes", text)
 
 
 if __name__ == "__main__":
