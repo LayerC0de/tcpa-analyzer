@@ -13,13 +13,53 @@ destroys the client's credibility on the first phone call.
 """
 from __future__ import annotations
 
+import json
+import textwrap
 from datetime import datetime
 
-from ..phone import display
+from ..enrich import resporg
+from ..phone import display, is_toll_free
 from . import leads
 
 PER_CALL = 500
 PER_CALL_WILLFUL = 1500
+
+
+def _resporg_lines(con, numbers: list[str], last_call: dict[str, str]) -> list[str]:
+    """RespOrg evidence for toll-free numbers, each source kept distinct."""
+    out = ["", "  Toll-free RespOrg -- the subpoena path for a toll-free number, NOT",
+           "  the caller. It knows its customer, who may be a reseller or a",
+           "  call-center platform."]
+    for n in numbers:
+        rows = resporg.history(con, n)
+        out += ["", f"    {display(n)}"]
+        if not rows:
+            out.append("      No RespOrg lookup on file. Run `resporg --lookup`, then "
+                       "confirm on somos.com.")
+            continue
+        raw = next((r["raw_json"] for r in rows if r["raw_json"]), None)
+        day = last_call.get(n)
+        if raw and day:
+            h = resporg.holder_on(json.loads(raw), day)
+            held = (f"{h['resporg_id']} {h['resporg_name'] or ''}, "
+                    f"{h['status']} since {h['since']}" if h else "no holder")
+            out.append(f"      Held on date of last call ({day}): {held}")
+            out.append("        (registry history via resporgs.com -- a lead, not "
+                       "an official record)")
+        for r in rows:
+            who = " ".join(x for x in (r["resporg_id"], r["resporg_name"]) if x) \
+                or ("no current holder" if r["status"] not in (None, "NOT_FOUND")
+                    else "no registry record")
+            status = f"  [{r['status']}]" if r["status"] else ""
+            out.append(f"      {r['checked_on']}  {r['method']:<6} {who}{status}")
+            out.append(f"        source: {r['source']}")
+            if r["note"]:
+                out += textwrap.wrap(r["note"], width=74, initial_indent="        ",
+                                     subsequent_indent="        ")
+    out += ["", "    'manual' = the owner checked somos.com, which shows only today's",
+            "    holder, by name. 'auto' = third-party registry data; confirm before",
+            "    citing."]
+    return out
 
 
 def build(con, campaign_id: int | None = None, number: str | None = None,
@@ -108,14 +148,20 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
             "2. DEFENDANT ATTRIBUTION",
             "-" * 78,
             f"  Calling numbers involved: {len(members)}"]
+    toll_free = [m for m in members if is_toll_free(m)]
     if carriers:
         for c in carriers:
             out.append(f"    {c['c']:>3} numbers  {c['carrier_name']} "
                        f"(OCN {c['carrier_ocn']}, {c['line_type']})")
         out += ["  Carriers hold the number blocks; they are the subpoena and",
                 "  traceback path, NOT the caller."]
-    else:
+    elif len(toll_free) < len(members):
         out.append("    Carrier data not resolved. Run `enrich` before filing.")
+    if toll_free:
+        last_call = {}
+        for c in calls:
+            last_call[c["number"]] = c["local_date"]
+        out += _resporg_lines(con, toll_free, last_call)
 
     for e in ents:
         out.append("")
@@ -128,7 +174,7 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
         out.append(f"    Source: {e['source_url']}")
     if not defendants:
         out += ["", "  NO DEFENDANT IDENTIFIED. This is the blocking issue:",
-                "  a campaign without a named, servable caller or seller cannot be filed."]
+                "  a claim without a named, servable caller or seller cannot be filed."]
 
     out += ["",
             "3. COUNTABLE VIOLATIONS",

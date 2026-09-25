@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from tcpa import db                                  # noqa: E402
 from tcpa.analyze import campaign as campaign_mod    # noqa: E402
 from tcpa.ingest import android                      # noqa: E402
-from tcpa.phone import display                       # noqa: E402
+from tcpa.phone import display, normalize            # noqa: E402
 
 RAW_DIR = ROOT / "data" / "raw"
 DEFAULT_RAW = RAW_DIR / "android_calllog.txt"
@@ -427,12 +427,26 @@ def _latest_campaign(con):
     return row["id"] if row else None
 
 
+def _number_arg(raw: str | None) -> str | None:
+    """Normalize a --number argument once, at the boundary (CLAUDE.md invariant 1).
+
+    Stored numbers are bare 10-digit NANP; comparing the raw spelling the user
+    typed ("800-555-0199") silently matches nothing.
+    """
+    if raw is None:
+        return None
+    number = normalize(raw)
+    if number is None:
+        sys.exit(f"not a NANP phone number: {raw!r}")
+    return number
+
+
 def cmd_complaint(args):
     from tcpa.report import ftc
 
     con = db.connect()
     if args.number:
-        text = ftc.for_number(con, args.number, your_state=args.state)
+        text = ftc.for_number(con, _number_arg(args.number), your_state=args.state)
     else:
         cid = args.campaign or _latest_campaign(con)
         if not cid:
@@ -449,7 +463,7 @@ def cmd_packet(args):
     cid = None if args.number else (args.campaign or _latest_campaign(con))
     if not cid and not args.number:
         sys.exit("no campaign found -- run `analyze`, or pass --number")
-    text = packet.build(con, campaign_id=cid, number=args.number,
+    text = packet.build(con, campaign_id=cid, number=_number_arg(args.number),
                         jurisdiction=args.state, dnc_since=args.dnc_since)
     _emit(text, args.out, "intake-packet.txt")
     con.close()

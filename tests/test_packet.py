@@ -100,5 +100,37 @@ class TestLeads(unittest.TestCase):
         self.assertIn("1 calls from 1 numbers across 1 Canadian area codes", text)
 
 
+class TestSingleNumberPacket(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.con = db.connect(Path(self.dir.name) / "tcpa.db")
+        self.con.execute("""INSERT INTO calls (source, source_row_id, number, ts_utc,
+                 local_iso, local_date, local_hour, duration_s, direction)
+                 VALUES ('test','1','8005550199',0,'2026-09-01 12:00:00',
+                         '2026-09-01',12,7,'INCOMING')""")
+        db.rebuild_numbers(self.con)
+        self.con.commit()
+
+    def tearDown(self):
+        self.con.close()
+        self.dir.cleanup()
+
+    def test_cli_normalizes_the_number_argument(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import cli
+        self.assertEqual(cli._number_arg("1 (800) 555-0199"), "8005550199")
+        with self.assertRaises(SystemExit):
+            cli._number_arg("12345")
+
+    def test_toll_free_number_shows_resporg_not_carrier_gap(self):
+        from tcpa.enrich import resporg
+        resporg.record_manual(self.con, "8005550199", None, "somos.com",
+                              name="Example Telecom")
+        text = packet.build(self.con, number="8005550199")
+        self.assertIn("Toll-free RespOrg", text)
+        self.assertIn("Example Telecom", text)
+        self.assertNotIn("Carrier data not resolved", text)
+
+
 if __name__ == "__main__":
     unittest.main()
