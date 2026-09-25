@@ -80,6 +80,19 @@ Legitimate callers that never appear as a contact (your bank, a pharmacy) can be
 listed in `data/known_numbers.txt`, one number per line with a `#` note. They
 are then excluded everywhere, like address-book contacts.
 
+When you told a caller to stop, record it against the call you said it on.
+Later calls from that number are what can carry up to $1,500 instead of $500:
+
+```bash
+python cli.py revoke 800-555-0199                  # list the answered calls to pick from
+python cli.py revoke 800-555-0199 --at 2026-03-01 --basis recollection --said "stop calling me"
+python cli.py revoke 800-555-0199 --at "2026-03-01 15:00" --basis recording --recording call.m4a
+```
+
+`--basis` is required and appears in the packet: a recording or document is
+evidence an attorney can use as-is; `recollection` is your testimony and is
+labelled that way. A revocation covers only the number it was said to.
+
 ## Step 3 — produce output
 
 ```bash

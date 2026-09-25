@@ -576,6 +576,82 @@ def cmd_known(args):
     con.close()
 
 
+def _print_revocations(rows):
+    for r in rows:
+        who = display(r["number"]) if r["number"] else "campaign-wide"
+        print(f"  #{r['id']:<3} {(r['local_iso'] or '')[:16]:<17} {who:<16} "
+              f"{r['method']:<8} basis: {r['basis'] or 'unstated':<13}"
+              f"{r['calls_after'] if r['calls_after'] is not None else '-':>3} calls after")
+        if r["verbatim"]:
+            print(f"        said: \"{r['verbatim']}\"")
+        if r["evidence_path"]:
+            print(f"        evidence: {r['evidence_path']}")
+
+
+def cmd_revoke(args):
+    from tcpa import revoke
+
+    con = db.connect()
+    try:
+        if args.remove:
+            if not revoke.remove(con, args.remove):
+                raise ValueError(f"no revocation #{args.remove}")
+            print(f"removed revocation #{args.remove}")
+            return
+
+        number = _number_arg(args.number) if args.number else None
+        if number and args.at:
+            if not args.basis:
+                raise ValueError("--basis is required: recording, document, or "
+                                 "recollection (from memory)")
+            res = revoke.record(con, number, args.at, args.basis, method=args.method,
+                                said=args.said, evidence=args.recording,
+                                note=args.note, tz=args.tz)
+            print(f"recorded revocation #{res['id']}: {display(number)} at "
+                  f"{res['local_iso'][:16]} -- {res['calls_after']} later call(s) "
+                  f"from this number")
+            if args.basis == "recollection":
+                print("  basis: your recollection. That is testimony, not a recording;")
+                print("  an attorney will want anything that corroborates it.")
+            return
+        if args.at:
+            raise ValueError("--at needs a number")
+
+        if number:
+            calls = revoke.answered_calls(con, number)
+            print(f"{display(number)} -- answered calls (a verbal request must be on one):")
+            if any(c["duration_estimated"] for c in calls):
+                print("  (<= : carrier record, billed in whole minutes)")
+            if not calls:
+                print("  none. A verbal revocation needs a call you picked up;")
+                print("  a text or letter can use --method sms/written.")
+            for c in calls:
+                later = revoke.calls_after(con, number, c["ts_utc"])
+                dur = (f"<={c['duration_s']}s" if c["duration_estimated"]
+                       else f"{c['duration_s']}s")
+                print(f"  {c['local_iso'][:16]}  {dur:>7}  "
+                      f"{later:>3} later call(s)  [{c['source']}]")
+            rows = revoke.listing(con, number)
+            if rows:
+                print("\nrecorded revocations:")
+                _print_revocations(rows)
+            else:
+                print(f"\nrecord one with: revoke {args.number} --at YYYY-MM-DD "
+                      f"--basis recollection --said \"stop calling me\"")
+            return
+
+        rows = revoke.listing(con)
+        if not rows:
+            print("no revocations recorded -- `revoke <number>` lists the calls to choose from")
+            return
+        print(f"{len(rows)} revocation(s):")
+        _print_revocations(rows)
+    except ValueError as exc:
+        sys.exit(str(exc))
+    finally:
+        con.close()
+
+
 def cmd_report(args):
     con = db.connect()
     q = lambda s, *a: con.execute(s, a).fetchall()
@@ -702,6 +778,20 @@ def main():
 
     sp = sub.add_parser("entities", help="show resolved legal entities")
     sp.set_defaults(func=cmd_entities)
+
+    sp = sub.add_parser("revoke",
+                        help="record a 'stop calling' request against a specific call")
+    sp.add_argument("number", nargs="?", help="the caller (omit to list all revocations)")
+    sp.add_argument("--at", help="date of the call, YYYY-MM-DD, or 'YYYY-MM-DD HH:MM' "
+                                 "if you answered more than one that day")
+    sp.add_argument("--basis", choices=("recording", "document", "recollection"),
+                    help="how you know: a recording, a document/text, or your memory")
+    sp.add_argument("--method", choices=("verbal", "written", "sms"), default="verbal")
+    sp.add_argument("--said", help="what you said, as closely as you can recall")
+    sp.add_argument("--recording", help="path to the recording, screenshot, or letter")
+    sp.add_argument("--note")
+    sp.add_argument("--remove", type=int, metavar="ID", help="delete a mistaken entry")
+    sp.set_defaults(func=cmd_revoke)
 
     sp = sub.add_parser("known", help="list numbers in data/known_numbers.txt")
     sp.set_defaults(func=cmd_known)

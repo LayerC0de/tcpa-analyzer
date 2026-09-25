@@ -98,7 +98,8 @@ def score(row, complaints: dict, revocations: int = 0) -> dict:
     violation = min(row["call_count"] / 12.0, 1.0) * 0.6
     if revocations:
         violation += 0.4
-        reasons.append(f"{revocations} recorded revocation(s) -- willfulness, 3x damages")
+        reasons.append(f"{revocations} recorded revocation(s) -- possible willfulness, "
+                       f"up to 3x damages")
     if complaints["complaints"]:
         reasons.append(f"{complaints['complaints']} FCC complaint(s) name this number")
     if complaints["prerecorded"]:
@@ -142,7 +143,9 @@ def build(con, min_calls: int = 2):
     out = []
     for row in repeat_callers(con, min_calls=min_calls):
         comp = complaint_profile(con, row["number"])
-        s = score(row, comp)
+        revs = con.execute("SELECT COUNT(*) FROM revocations WHERE number = ?",
+                           (row["number"],)).fetchone()[0]
+        s = score(row, comp, revocations=revs)
         out.append({
             "number": row["number"],
             "calls": row["call_count"],

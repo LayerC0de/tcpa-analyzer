@@ -18,6 +18,7 @@ import textwrap
 from datetime import datetime
 
 from ..enrich import resporg
+from .. import revoke
 from ..phone import display, is_toll_free
 from . import leads
 
@@ -79,7 +80,7 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
     marks = ",".join("?" * len(members))
     calls = con.execute(f"""
         SELECT local_iso, local_date, local_hour, number, duration_s, source,
-               duration_estimated
+               duration_estimated, ts_utc
         FROM calls
         WHERE number IN ({marks})
           AND direction IN ('INCOMING','MISSED','REJECTED','BLOCKED')
@@ -89,9 +90,11 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
     if not calls:
         return "No calls on record."
 
+    # Campaign-level revocations (number NULL) are only ever entered by hand;
+    # a revocation on one number never spreads to the others automatically.
     revs = con.execute(f"""
-        SELECT ts_utc, method, verbatim, evidence_path FROM revocations
-        WHERE number IN ({marks}) OR campaign_id = ?
+        SELECT * FROM revocations
+        WHERE number IN ({marks}) OR (number IS NULL AND campaign_id = ?)
         ORDER BY ts_utc
     """, tuple(members) + (campaign_id or -1,)).fetchall()
 
@@ -116,12 +119,11 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
                                           FROM numbers WHERE number IN ({marks}))
     """, tuple(members)).fetchone()
 
-    after_rev = 0
-    if revs:
-        first_rev = min(r["ts_utc"] for r in revs)
-        after_rev = sum(1 for c in calls
-                        if con.execute("SELECT ts_utc FROM calls WHERE local_iso=? LIMIT 1",
-                                       (c["local_iso"],)).fetchone()[0] > first_rev)
+    # Per number: a call is "after revocation" only if a revocation covering
+    # that same number preceded it.
+    after_rev = sum(1 for c in calls
+                    if any(revoke.applies(r, c["number"], c["ts_utc"], campaign_id)
+                           for r in revs))
 
     est_only = sum(1 for c in calls if c["duration_estimated"])
     out = [
@@ -138,9 +140,19 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
         f"  Documented revocations: {len(revs)}",
     ]
     for r in revs:
-        stamp = datetime.utcfromtimestamp(r["ts_utc"] / 1000).strftime("%Y-%m-%d")
-        out.append(f"    {stamp}  {r['method']}  "
-                   f"{'recording: ' + r['evidence_path'] if r['evidence_path'] else 'no recording'}")
+        stamp = (r["local_iso"] or "")[:16] or             datetime.utcfromtimestamp(r["ts_utc"] / 1000).strftime("%Y-%m-%d")
+        who = display(r["number"]) if r["number"] else "campaign-wide (entered by hand)"
+        n_after = sum(1 for c in calls if revoke.applies(r, c["number"], c["ts_utc"],
+                                                         campaign_id))
+        out.append(f"    {stamp}  {who}  {r['method']}, basis: {r['basis'] or 'unstated'}"
+                   f"  -- {n_after} later call(s) from this number")
+        out.append(f"      said: \"{r['verbatim']}\"" if r["verbatim"]
+                   else "      wording not recorded")
+        if r["evidence_path"]:
+            out.append(f"      evidence: {r['evidence_path']}")
+        if r["basis"] == "recollection":
+            out.append(f"      From the owner's memory, entered {r['entered_on']}. Testimony,")
+            out.append("      not a recording -- corroborate where possible.")
     if not revs:
         out.append("    NONE RECORDED. Without a documented revocation there is no")
         out.append("    willfulness predicate, and damages stay at the base rate.")
@@ -180,13 +192,17 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
             "3. COUNTABLE VIOLATIONS",
             "-" * 78,
             f"  Total calls on record: {len(calls)}",
-            f"  Calls after first documented revocation: {after_rev}",
+            f"  Calls after a documented revocation (same number): {after_rev}",
             f"  Calls outside 8am-9pm local: "
             f"{sum(1 for c in calls if c['local_hour'] < 8 or c['local_hour'] >= 21)}",
             "",
             "  Statutory exposure, arithmetic only -- NOT a valuation:",
-            f"    {len(calls)} x ${PER_CALL} = ${len(calls) * PER_CALL:,}",
-            f"    {after_rev} x ${PER_CALL_WILLFUL} (willful) = ${after_rev * PER_CALL_WILLFUL:,}",
+            f"    {len(calls) - after_rev} x ${PER_CALL} = "
+            f"${(len(calls) - after_rev) * PER_CALL:,}",
+            f"    {after_rev} x up to ${PER_CALL_WILLFUL} after revocation = "
+            f"${after_rev * PER_CALL_WILLFUL:,}",
+            "  Each call is counted once. Trebling to $1,500 requires a finding that",
+            "  the violation was willful or knowing, and is at the court's discretion.",
             "  Counsel decides which calls are actually countable and under which",
             "  section. 227(c)(5) requires 2+ calls in 12 months; 227(b) requires",
             "  proving an ATDS or artificial/prerecorded voice.",
@@ -213,6 +229,8 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
         gaps.append("No defendant (caller or seller) identified -- no one to serve.")
     if not revs:
         gaps.append("No documented revocation -- no willfulness multiplier.")
+    elif all(r["basis"] == "recollection" for r in revs):
+        gaps.append("Revocations rest on recollection only -- no recording or document.")
     if not dnc_since:
         gaps.append("DNC registration date not supplied -- 227(c) anchor missing.")
     if not any(c["source"] == "android" for c in calls):

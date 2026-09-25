@@ -180,6 +180,8 @@ CREATE TABLE IF NOT EXISTS resporg_lookups (
 CREATE INDEX IF NOT EXISTS idx_resporg_number ON resporg_lookups(number);
 
 -- Revocation events: the willfulness predicate. $500 -> $1500 per call after this.
+-- Applies to calls from `number` placed after ts_utc. Extending one revocation
+-- to a whole campaign of rotating numbers is a legal judgment, never automatic.
 CREATE TABLE IF NOT EXISTS revocations (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     campaign_id       INTEGER REFERENCES campaigns(id),
@@ -187,7 +189,12 @@ CREATE TABLE IF NOT EXISTS revocations (
     ts_utc            INTEGER NOT NULL,
     method            TEXT,                 -- 'verbal' / 'written' / 'sms'
     evidence_path     TEXT,                 -- recording or screenshot on disk
-    verbatim          TEXT
+    verbatim          TEXT,
+    call_id           INTEGER REFERENCES calls(id),  -- the call it was said on
+    basis             TEXT,                 -- 'recording' / 'recollection' / 'document'
+    note              TEXT,
+    entered_on        TEXT,                 -- when it was recorded in this tool
+    local_iso         TEXT                  -- local time of the request
 );
 """
 
@@ -203,6 +210,13 @@ _MIGRATIONS = {
     "calls": {
         "duration_estimated": "INTEGER NOT NULL DEFAULT 0",
         "dup_of_device": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "revocations": {
+        "call_id": "INTEGER REFERENCES calls(id)",
+        "basis": "TEXT",
+        "note": "TEXT",
+        "entered_on": "TEXT",
+        "local_iso": "TEXT",
     },
 }
 
