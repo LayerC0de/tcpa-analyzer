@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS numbers (
     lata              TEXT,
     ilec_name         TEXT,
     is_spoofed_guess  INTEGER,
-    enriched_at       TEXT
+    enriched_at       TEXT,
+    owner_calls       INTEGER NOT NULL DEFAULT 0  -- times the owner called it back
 );
 
 -- A campaign is one operation, inferred from shared infrastructure/behavior.
@@ -206,6 +207,7 @@ _MIGRATIONS = {
         "rate_center": "TEXT",
         "lata": "TEXT",
         "ilec_name": "TEXT",
+        "owner_calls": "INTEGER NOT NULL DEFAULT 0",
     },
     "calls": {
         "duration_estimated": "INTEGER NOT NULL DEFAULT 0",
@@ -284,20 +286,28 @@ def connect(path: Path | str | None = None) -> sqlite3.Connection:
 
 # A number is a KNOWN CONTACT if any of these is true:
 #   - any source ever attached an address-book name to it,
-#   - the account holder placed an outgoing call to it, or
+#   - the account holder called it BEFORE it ever called them, or
 #   - the account holder listed it in known_numbers.txt.
 # The second test carries the weight for carrier data, which exports no contact
 # names at all. Without it every relative and doctor's office is scored as an
 # unsolicited caller -- and because they call often, they dominate the ranking.
-# Calling someone is affirmative evidence of a relationship, which is also the
-# opposite of the "no prior express consent" a TCPA claim requires. The third
-# covers businesses the owner has a relationship with but never calls or saves.
+#
+# It deliberately ignores CALLBACKS. Calling an unknown number back to find out
+# who it is is how a robocall victim identifies the caller, and it grants no
+# consent to further calls. An earlier version counted any outgoing call, which
+# silently hid dozens of numbers the owner was investigating. A number that
+# called first stays in the analysis with `owner_calls` set, so the callback is
+# visible and disclosed; legitimate ones go in known_numbers.txt.
 KNOWN_CONTACT_SQL = """
     SELECT number FROM calls
     WHERE number IS NOT NULL AND contact_name IS NOT NULL AND contact_name != ''
     UNION
-    SELECT number FROM calls
-    WHERE number IS NOT NULL AND direction = 'OUTGOING'
+    SELECT o.number FROM calls o
+    WHERE o.number IS NOT NULL AND o.direction = 'OUTGOING'
+      AND NOT EXISTS (
+          SELECT 1 FROM calls i
+          WHERE i.number = o.number AND i.ts_utc < o.ts_utc
+            AND i.direction IN ('INCOMING','MISSED','REJECTED','BLOCKED'))
     UNION
     SELECT number FROM known_numbers
 """
@@ -316,7 +326,7 @@ def rebuild_numbers(con: sqlite3.Connection) -> int:
     con.execute(f"""
         INSERT INTO numbers (number, npa_nxx, is_toll_free, first_seen, last_seen,
                              call_count, answered_count, zero_dur_count,
-                             max_duration_s, geo)
+                             max_duration_s, geo, owner_calls)
         SELECT number,
                substr(number, 1, 6),
                CASE WHEN substr(number,1,3) IN
@@ -326,8 +336,10 @@ def rebuild_numbers(con: sqlite3.Connection) -> int:
                SUM(CASE WHEN direction='INCOMING' AND duration_s > 0 THEN 1 ELSE 0 END),
                SUM(CASE WHEN duration_s = 0 THEN 1 ELSE 0 END),
                MAX(duration_s),
-               MAX(geo)
-        FROM calls
+               MAX(geo),
+               (SELECT COUNT(*) FROM calls o WHERE o.number = c.number
+                  AND o.direction = 'OUTGOING' AND o.dup_of_device = 0)
+        FROM calls c
         WHERE number IS NOT NULL
           AND direction IN ('INCOMING','MISSED','REJECTED','BLOCKED')
           AND dup_of_device = 0
@@ -340,6 +352,7 @@ def rebuild_numbers(con: sqlite3.Connection) -> int:
             answered_count = excluded.answered_count,
             zero_dur_count = excluded.zero_dur_count,
             max_duration_s = excluded.max_duration_s,
+            owner_calls    = excluded.owner_calls,
             geo            = excluded.geo
     """)
     # Drop rollups for numbers that no longer qualify (e.g. a caller was added

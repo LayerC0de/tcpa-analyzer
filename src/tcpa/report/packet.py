@@ -215,6 +215,19 @@ def build(con, campaign_id: int | None = None, number: str | None = None,
             "    Carrier records round to the minute and omit calls that were",
             "    never answered. Treat their durations as approximate.",
             ]
+    callbacks = con.execute(f"""
+        SELECT number, COUNT(*) n, MIN(local_date) first, MAX(local_date) last
+        FROM calls WHERE number IN ({marks}) AND direction = 'OUTGOING'
+          AND dup_of_device = 0
+        GROUP BY number ORDER BY first
+    """, tuple(members)).fetchall()
+    if callbacks:
+        out += ["", f"  Owner called back {len(callbacks)} of these number(s) after being called:"]
+        out += [f"    {display(r['number'])}  {r['n']} time(s), {r['first']}"
+                + (f" .. {r['last']}" if r["last"] != r["first"] else "")
+                for r in callbacks]
+        out += ["    Calling back to identify a caller is not consent to further calls,",
+                "    but opposing counsel will raise it. Disclose it; do not omit it."]
     if comp and comp["n"]:
         out += ["",
                 f"  Third-party FCC complaints about these number blocks: {comp['n']}",

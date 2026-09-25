@@ -104,6 +104,9 @@ def score(row, complaints: dict, revocations: int = 0) -> dict:
         reasons.append(f"{complaints['complaints']} FCC complaint(s) name this number")
     if complaints["prerecorded"]:
         reasons.append(f"{complaints['prerecorded']} report prerecorded voice -- 227(b)")
+    if row["owner_calls"]:
+        reasons.append(f"you called this number back {row['owner_calls']} time(s) -- "
+                       f"not consent, but disclose it to counsel")
     violation = min(violation, 1.0)
 
     # --- COLLECTABILITY ----------------------------------------------------
@@ -156,6 +159,7 @@ def build(con, min_calls: int = 2):
             "carrier": row["carrier_name"] or "",
             "line_type": row["line_type"] or "",
             "complaints": comp["complaints"],
+            "owner_calls": row["owner_calls"],
             **s,
         })
     order = {"A": 0, "B": 1, "C": 2, "D": 3}

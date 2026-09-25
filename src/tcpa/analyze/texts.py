@@ -16,8 +16,13 @@ Two classes of sender need separating, because they have opposite profiles:
   LONG CODES (10-digit) are cheap, disposable, and routinely used for spam.
   Attribution is weak for the same reasons it is weak for voice DIDs.
 
-As with voice, replying to a sender is treated as evidence of a relationship and
-removes them from consideration.
+A sender is treated as a relationship if the owner reached out FIRST (texted or
+called before the sender ever did), held a conversation (3+ replies), saved them
+as a contact, or listed them in known_numbers.txt. One or two replies AFTER the
+sender texted are not: that may well have been STOP, a revocation, not consent. Carrier
+exports carry no message bodies, so the tool cannot tell which -- replies are
+counted and flagged for the owner to check on the phone instead of hiding the
+sender, which is what an earlier version did.
 """
 from __future__ import annotations
 
@@ -25,24 +30,62 @@ from collections import Counter, defaultdict
 
 SHORT_CODE_MAX_LEN = 6
 
+# A STOP is one reply, occasionally two. Three or more replies is a
+# conversation, and a conversation is a relationship -- including ones that
+# began before the data window, which otherwise look like the sender "texted
+# first". Calls do not get this rule: an owner investigating a robocaller may
+# call it back several times.
+CONVERSATION_REPLIES = 3
+
 
 def _known(con) -> set[str]:
-    """Numbers the account holder engaged with, by any channel."""
-    rows = con.execute("""
-        SELECT number FROM texts WHERE direction='OUTGOING' AND number IS NOT NULL
-        UNION
-        SELECT number FROM calls WHERE direction='OUTGOING' AND number IS NOT NULL
-        UNION
+    """Numbers with a real relationship: a contact name, the known-numbers list,
+    the owner making first contact by text or call, or a text conversation."""
+    rows = con.execute(f"""
         SELECT number FROM calls
         WHERE contact_name IS NOT NULL AND contact_name != '' AND number IS NOT NULL
         UNION
         SELECT number FROM known_numbers
+        UNION
+        SELECT number FROM texts WHERE direction = 'OUTGOING' AND number IS NOT NULL
+        GROUP BY number HAVING COUNT(*) >= {CONVERSATION_REPLIES}
+        UNION
+        SELECT number FROM (
+            SELECT number, ts_utc, direction FROM texts WHERE number IS NOT NULL
+            UNION ALL
+            SELECT number, ts_utc, direction FROM calls WHERE number IS NOT NULL
+              AND direction IN ('OUTGOING','INCOMING','MISSED','REJECTED','BLOCKED')
+        )
+        GROUP BY number
+        HAVING MIN(CASE WHEN direction = 'OUTGOING' THEN ts_utc END)
+             < COALESCE(MIN(CASE WHEN direction != 'OUTGOING' THEN ts_utc END), 9e18)
     """).fetchall()
     return {r[0] for r in rows}
 
 
+def _replies(con) -> dict[str, list[int]]:
+    """Owner's outgoing text times, keyed by long-code number or short code."""
+    out: dict[str, list[int]] = defaultdict(list)
+    for r in con.execute("""
+        SELECT number, number_raw, ts_utc FROM texts WHERE direction = 'OUTGOING'
+    """):
+        key = r["number"] or "".join(c for c in (r["number_raw"] or "") if c.isdigit())
+        if key:
+            out[key].append(r["ts_utc"])
+    return out
+
+
+def _reply_stats(msgs, replies: list[int]) -> dict:
+    # Messages that kept arriving after the owner first replied: if that reply
+    # was STOP, these are the ones sent after a revocation.
+    first = min(replies) if replies else None
+    return {"replies": len(replies),
+            "after_reply": sum(1 for m in msgs if first is not None and m["ts_utc"] > first)}
+
+
 def summarize(con) -> dict:
     known = _known(con)
+    replies = _replies(con)
     rows = con.execute("""
         SELECT number, number_raw, kind, local_date, ts_utc
         FROM texts WHERE direction='INCOMING'
@@ -59,7 +102,7 @@ def summarize(con) -> dict:
             by_sender[r["number"]].append(r)
 
     unknown = {n: v for n, v in by_sender.items() if n not in known}
-    replied = {n: v for n, v in by_sender.items() if n in known}
+    first_contact = {n: v for n, v in by_sender.items() if n in known}
 
     return {
         "total_incoming": len(rows),
@@ -68,9 +111,11 @@ def summarize(con) -> dict:
         "long_code_senders": len(by_sender),
         "unknown_senders": len(unknown),
         "unknown_messages": sum(len(v) for v in unknown.values()),
-        "replied_senders": len(replied),
+        "replied_unknown": sum(1 for n in unknown if replies.get(n)),
+        "known_senders": len(first_contact),
         "unknown": unknown,
         "short_codes": short_codes,
+        "replies": replies,
     }
 
 
@@ -93,6 +138,7 @@ def rank_unknown(summary: dict, min_messages: int = 2) -> list[dict]:
             "last": dates[-1],
             "kinds": dict(kinds),
             "persistent": span_days >= 3,
+            **_reply_stats(msgs, summary["replies"].get(number, [])),
         })
     return sorted(out, key=lambda d: (-d["messages"], d["first"]))
 
@@ -105,5 +151,6 @@ def rank_short_codes(summary: dict, top: int = 15) -> list[dict]:
             "code": code, "messages": len(msgs),
             "distinct_days": len(set(dates)),
             "first": dates[0], "last": dates[-1],
+            **_reply_stats(msgs, summary["replies"].get(code, [])),
         })
     return sorted(out, key=lambda d: -d["messages"])[:top]

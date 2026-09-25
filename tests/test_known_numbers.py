@@ -73,5 +73,49 @@ class TestExclusion(unittest.TestCase):
         self.assertEqual(self._rollup(), {"2025550100"})
 
 
+class TestCallbacks(unittest.TestCase):
+    """Calling a number back to identify it must not hide it from analysis."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.con = db.connect(Path(self.dir.name) / "tcpa.db")
+
+    def tearDown(self):
+        self.con.close()
+        self.dir.cleanup()
+
+    def _call(self, row_id, number, direction, ts):
+        self.con.execute("""
+            INSERT INTO calls (source, source_row_id, number, ts_utc, local_iso,
+                               local_date, local_hour, duration_s, direction)
+            VALUES ('test', ?, ?, ?, '2026-09-01 12:00:00', '2026-09-01', 12, 10, ?)
+        """, (str(row_id), number, ts, direction))
+
+    def test_callback_keeps_number_and_is_counted(self):
+        self._call(1, "2025550101", "MISSED", 1000)
+        self._call(2, "2025550101", "OUTGOING", 2000)    # owner calls back
+        db.rebuild_numbers(self.con)
+        row = self.con.execute("SELECT owner_calls FROM numbers "
+                               "WHERE number='2025550101'").fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["owner_calls"], 1)
+
+    def test_owner_calling_first_is_a_relationship(self):
+        self._call(1, "2025550102", "OUTGOING", 1000)    # owner called first
+        self._call(2, "2025550102", "INCOMING", 2000)
+        db.rebuild_numbers(self.con)
+        self.assertIsNone(self.con.execute(
+            "SELECT 1 FROM numbers WHERE number='2025550102'").fetchone())
+
+    def test_packet_discloses_callbacks(self):
+        from tcpa.report import packet
+        self._call(1, "2025550101", "MISSED", 1000)
+        self._call(2, "2025550101", "OUTGOING", 2000)
+        db.rebuild_numbers(self.con)
+        text = packet.build(self.con, number="2025550101")
+        self.assertIn("Owner called back 1 of these number(s)", text)
+        self.assertIn("Disclose it", text)
+
+
 if __name__ == "__main__":
     unittest.main()

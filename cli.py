@@ -347,17 +347,22 @@ def cmd_targets(args):
         "C": "partially identifiable -- needs enrichment or a callback",
         "D": "disposable / unattributable -- not worth pursuing",
     }
+    if any(r["owner_calls"] for r in rows):
+        print("'you' = times you called the number back after it called you. That is")
+        print("not consent, but it will come up -- review these, and move any you")
+        print("recognize to data/known_numbers.txt.\n")
     for tier in "ABCD":
         group = [r for r in rows if r["tier"] == tier]
         if not group:
             continue
         print(f"\n=== TIER {tier}  ({len(group)})  {labels[tier]} ===")
-        print(f"  {'number':<16}{'calls':>6}{'ans':>4}{'longest':>9}{'cmpl':>6}  "
-              f"{'line':<15} geo")
+        print(f"  {'number':<16}{'calls':>6}{'ans':>4}{'longest':>9}{'cmpl':>6}"
+              f"{'you':>4}  {'line':<15} geo")
         for r in group:
             d = r["max_duration_s"]
             print(f"  {display(r['number']):<16}{r['calls']:>6}{r['answered']:>4}"
-                  f"{d//60:>6}m{d%60:02d}{r['complaints']:>6}  "
+                  f"{d//60:>6}m{d%60:02d}{r['complaints']:>6}"
+                  f"{r['owner_calls'] or '':>4}  "
                   f"{r['line_type'] or '?':<15} {r['geo']}")
             if args.verbose and r["reasons"]:
                 for reason in r["reasons"]:
@@ -377,17 +382,19 @@ def cmd_texts(args):
     print(f"  short-code senders  : {s['short_code_senders']} "
           f"({s['short_code_messages']:,} messages)")
     print(f"  long-code senders   : {s['long_code_senders']}")
-    print(f"    you replied to    : {s['replied_senders']}  (excluded)")
-    print(f"    never engaged     : {s['unknown_senders']} "
-          f"({s['unknown_messages']:,} messages)")
+    print(f"    you contacted first: {s['known_senders']}  (excluded -- relationship)")
+    print(f"    unknown senders   : {s['unknown_senders']} "
+          f"({s['unknown_messages']:,} messages; you replied to {s['replied_unknown']})")
 
     ranked = tx.rank_unknown(s, min_messages=args.min)
     print(f"\n=== UNKNOWN SENDERS WITH {args.min}+ MESSAGES ({len(ranked)}) ===")
     if ranked:
-        print(f"  {'number':<16}{'msgs':>6}{'days':>6}  {'first':<12}{'last':<12} kinds")
+        print(f"  {'number':<16}{'msgs':>6}{'days':>6}{'rep':>5}{'after':>6}  "
+              f"{'first':<12}{'last':<12} kinds")
         for r in ranked[:30]:
             flag = " *" if r["persistent"] else ""
-            print(f"  {display(r['number']):<16}{r['messages']:>6}{r['distinct_days']:>6}  "
+            print(f"  {display(r['number']):<16}{r['messages']:>6}{r['distinct_days']:>6}"
+                  f"{r['replies'] or '':>5}{r['after_reply'] or '':>6}  "
                   f"{r['first']:<12}{r['last']:<12} "
                   f"{','.join(f'{k}:{v}' for k, v in r['kinds'].items())}{flag}")
         print("\n  * = spread over 3+ distinct days (persistent, not a single burst)")
@@ -395,10 +402,15 @@ def cmd_texts(args):
         print("  none")
 
     print("\n=== TOP SHORT CODES (A2P -- highly attributable, usually legitimate) ===")
-    print(f"  {'code':<10}{'msgs':>6}{'days':>6}  {'first':<12}last")
+    print(f"  {'code':<10}{'msgs':>6}{'days':>6}{'rep':>5}{'after':>6}  {'first':<12}last")
     for r in tx.rank_short_codes(s):
-        print(f"  {r['code']:<10}{r['messages']:>6}{r['distinct_days']:>6}  "
+        print(f"  {r['code']:<10}{r['messages']:>6}{r['distinct_days']:>6}"
+              f"{r['replies'] or '':>5}{r['after_reply'] or '':>6}  "
               f"{r['first']:<12}{r['last']}")
+    print("\n  rep = your replies; after = messages that arrived after your first reply.")
+    print("  If that reply was STOP, 'after' counts texts sent after a revocation. The")
+    print("  carrier record has no message text -- check the thread on your phone, and")
+    print("  record a STOP with: revoke <number> --method sms --basis document ...")
     con.close()
 
 
