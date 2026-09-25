@@ -83,7 +83,17 @@ class TestLeads(unittest.TestCase):
         text = self._campaign()
         self.assertIn("2 calls from 2 numbers across 2 Canadian area codes", text)
         self.assertIn("Example Telecom", text)
-        self.assertIn("name confirmed on somos.com", text)
+        self.assertIn("confirmed on somos.com", text)
+
+    def test_somos_basis_never_overstates(self):
+        row = {"method": "manual", "resporg_name": "Example Labs LLC"}
+        self.assertEqual(leads._basis(row, "EXAMPLE LABS"), "confirmed on somos.com")
+        row = {"method": "manual", "resporg_name": "Other Media Inc"}
+        self.assertEqual(leads._basis(row, "Example Labs LLC"),
+                         "somos.com now: Other Media Inc")
+        row = {"method": "manual", "resporg_name": None}
+        self.assertEqual(leads._basis(row, "Example Labs LLC"),
+                         "somos.com now: available")
 
     def test_campaign_members_are_not_double_counted(self):
         text = self._campaign("4165550101")

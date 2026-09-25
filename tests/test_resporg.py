@@ -135,6 +135,13 @@ class TestStorage(unittest.TestCase):
         self.assertIsNone(row["resporg_id"])
         self.assertEqual(row["resporg_name"], "Example Telecom")
 
+    def test_manual_available_result_records_status_only(self):
+        resporg.record_manual(self.con, "8005550199", None, "somos.com",
+                              status="spare")
+        row = resporg.history(self.con, "8005550199")[0]
+        self.assertIsNone(row["resporg_name"])
+        self.assertEqual(row["status"], "SPARE")
+
     def test_worklist_includes_fcc_callbacks_and_survives_rollup_rebuild(self):
         self.con.execute("INSERT INTO complaints (fcc_id, advertiser_phone) "
                          "VALUES ('x1', '8885550123')")

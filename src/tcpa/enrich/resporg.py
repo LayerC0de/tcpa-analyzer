@@ -209,8 +209,11 @@ def record_manual(con, number: str, resporg_id: str | None, source: str,
     # Anything asserted in a filing needs a citation a judge can check.
     if not source or not source.strip():
         raise ValueError("a source is required (e.g. 'somos.com lookup')")
-    if not resporg_id and not (name or "").strip():
-        raise ValueError("record at least a RespOrg ID (--id) or company name (--name)")
+    # An "available" result names no holder at all, so a status alone (SPARE)
+    # is a valid observation too: the number is no longer anyone's.
+    if not resporg_id and not (name or "").strip() and not (status or "").strip():
+        raise ValueError("record a RespOrg ID (--id), company name (--name), "
+                         "or status (--status, e.g. SPARE for 'available')")
     checked = date.fromisoformat(checked_on).isoformat() if checked_on \
         else date.today().isoformat()
     parsed = {"resporg_id": parse_id(resporg_id) if resporg_id else None,

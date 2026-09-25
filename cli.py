@@ -185,6 +185,8 @@ def _print_resporg_history(con, number):
         if r["resporg_id"] or r["resporg_name"]:
             who = (f"{r['resporg_id'] or '(no ID shown)'}  {r['resporg_name'] or ''}"
                    + (f" ({r['resporg_group']})" if r["resporg_group"] else ""))
+        elif r["status"] and r["status"] != "NOT_FOUND":
+            who = "no current holder"
         else:
             who = "no registry record"
         since = f" since {r['status_since']}" if r["status_since"] else ""
@@ -203,13 +205,13 @@ def cmd_resporg(args):
     con = db.connect()
     try:
         number = resporg.parse_number(args.number) if args.number else None
-        if number and (args.id or args.name):
+        if number and (args.id or args.name or args.status):
             resporg.record_manual(con, number, args.id, args.source, name=args.name,
                                   status=args.status, checked_on=args.date,
                                   note=args.note)
             print(f"recorded manual lookup for {display(number)}")
-        elif args.id or args.name:
-            raise ValueError("--id/--name need a number")
+        elif args.id or args.name or args.status:
+            raise ValueError("--id/--name/--status need a number")
     except ValueError as exc:
         con.close()
         sys.exit(str(exc))
@@ -240,7 +242,10 @@ def cmd_resporg(args):
         if r["checked_on"]:
             rid = r["resporg_id"] or "-"
             status = r["status"] or "?"
-            holder = r["resporg_name"] or ("no registry record" if not r["resporg_id"] else "")
+            holder = r["resporg_name"] or (
+                "" if r["resporg_id"] else
+                "no registry record" if r["status"] in (None, "NOT_FOUND") else
+                "no current holder")
         else:
             rid, status, holder = "", "", "not looked up"
         print(f"  {display(r['number']):<16}{r['calls']:>6}  {r['last_call'] or '-':<11}"

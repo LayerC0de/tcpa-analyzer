@@ -19,6 +19,27 @@ def _campaign_numbers(con) -> set[str]:
     return {r[0] for r in con.execute("SELECT number FROM campaign_numbers")}
 
 
+def _same_company(a: str | None, b: str | None) -> bool:
+    key = lambda s: "".join(ch for ch in (s or "").casefold() if ch.isalnum())
+    return bool(a and b) and (key(a).startswith(key(b)) or key(b).startswith(key(a)))
+
+
+def _basis(r, holder_name: str | None) -> str:
+    """Where the holder shown came from, without overstating a Somos check.
+
+    Somos's public form shows only who holds a number TODAY, by name. It
+    confirms the holder shown only when that is the same company; for a number
+    that has since moved or been released, say what Somos shows instead.
+    """
+    if r["method"] == "auto":
+        return "resporgs.com (lead)"
+    if r["method"] != "manual":
+        return "not looked up"
+    if _same_company(r["resporg_name"], holder_name):
+        return "confirmed on somos.com"
+    return f"somos.com now: {r['resporg_name'] or 'available'}"
+
+
 def _toll_free(con) -> list[str]:
     in_campaign = _campaign_numbers(con)
     callers = [r for r in resporg.worklist(con)
@@ -48,11 +69,8 @@ def _toll_free(con) -> list[str]:
         out += ["", f"    {'number':<16}{'calls':>5}  {'last call':<11}{'resporg':<8}"
                     f"{'holder':<22}{'now':<9}basis"]
         for r in shown:
-            # Somos's public form shows the company name only; any ID shown
-            # beside it comes from registry history, so say exactly that.
-            basis = {"manual": "name confirmed on somos.com",
-                     "auto": "resporgs.com (lead)"}.get(r["method"], "not looked up")
             rid, name = holder(r)
+            basis = _basis(r, name)
             now = r["status"] or ""
             out.append(f"    {display(r['number']):<16}{r['calls']:>5}  "
                        f"{r['last_call'] or '-':<11}{rid or '-':<8}"
